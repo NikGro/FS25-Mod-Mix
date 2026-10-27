@@ -1,0 +1,66 @@
+name: Release
+
+# Builds one release with every mod ZIP as its own download.
+#  - mods/*.zip are copied as they are
+#  - parts/<name>.zip.partNN are joined back into <name>.zip (files over 100 MB are split for git)
+#  - every ZIP is checked against checksums.md5
+# The release tag is the content of RELEASE_TAG. A new tag in that file gives a new release;
+# a push or manual run with an unchanged tag does nothing if the release already exists.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Decide tag
+        id: tag
+        run: |
+          TAG=$(tr -d ' \r\n' < RELEASE_TAG)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG exists, nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and check ZIPs
+        if: steps.tag.outputs.needed == 'true'
+        run: |
+          mkdir dist
+          cp mods/*.zip dist/
+          for first in parts/*.zip.part00; do
+            [ -e "$first" ] || continue
+            name=$(basename "$first" .part00)
+            cat parts/"$name".part* > dist/"$name"
+          done
+          cd dist
+          md5sum -c ../checksums.md5
+          ls -la
+
+      - name: Create release
+        if: steps.tag.outputs.needed == 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          {
+            echo "Alle Mods des Silverrun-Spielstands, Stand $TAG."
+            echo
+            echo "Jede ZIP einzeln herunterladen und unverändert in den mods-Ordner legen."
+            echo
+            echo '```'
+            cat checksums.md5
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
